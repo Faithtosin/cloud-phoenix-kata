@@ -1,0 +1,647 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: CI/CD pipeline for GitHub projects
+Parameters:
+  ENV:
+    Type: String
+    Default: development
+    AllowedValues:
+      - development
+      - production
+  VPCid:
+    Type: CommaDelimitedList
+    Default: 'vpc-860268fe'
+  SGIds:
+    Type: CommaDelimitedList
+    Default: 'sg-3b17706b'
+  PubSubNetIds: 
+    Type: CommaDelimitedList
+    Default: 'subnet-eae036b7,subnet-05a5627d,subnet-3d1afb77,subnet-bfd19f94'
+  PrivSubNetIds:
+    Type: CommaDelimitedList
+    Default: 'subnet-eae036b7,subnet-05a5627d,subnet-3d1afb77,subnet-bfd19f94'
+  ContainerPort: 
+    Type: Number
+    Default: 8080
+  HostPort: 
+    Type: Number
+    Default: 8080
+  Dbname:
+    Type: String
+    Default: phoenixdb
+    NoEcho: true
+  DbUsername:
+    Type: String
+    Default: admin
+    NoEcho: true
+  DbPassword:
+    Type: String
+    NoEcho: true
+  ECSClusterTagKey:
+    Type: String
+    Default: Env
+  ECSClusterTagValue:
+    Type: String
+    Default: development
+  RepositoryName:
+    Type: String
+    Default: cloud-phoenix-kata
+  GitHubOwner:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9-]+'
+    Default: Faithtosin
+  GitHubRepository:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9-]+'
+    Default: cloud-phoenix-kata
+  GithubAccessToken:
+    Type: String
+    Default: '{{resolve:secretsmanager:GITHUB_ACCESS:SecretString:GITHUB_ACCESS_TOKEN}}'
+    NoEcho: true
+  GitHubBranch:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9-]+'
+    Default: main
+  CodeBuildEnvironmentImage:
+    Type: String
+    Default: 'aws/codebuild/standard:4.0'
+Mappings:
+  TaskDefinition:
+    name:
+      development: cloud-phoenix-kata-task-dev 
+      production: cloud-phoenix-kata-task-prod
+  Container:
+    name:
+      development: cloud-phoenix-kata-container-dev
+      production: cloud-phoenix-kata-container-prod
+  Cluster:
+    name:
+      development: cloud-phoenix-kata-cluster-dev
+      production: cloud-phoenix-kata-cluster-prod
+  Service:
+    name:
+      development: cloud-phoenix-kata-service-dev
+      production: cloud-phoenix-kata-service-prod
+  ClusterTargetGroup:
+    name:
+      development: cloud-phoenix-kata-targetgroup-dev
+      production: cloud-phoenix-kata-targetgroup-prod
+  ALB:
+    name:
+      development: cloud-phoenix-kata-alb-dev
+      production: cloud-phoenix-kata-alb-prod
+
+  #!Split [ ",", !FindInMap [PubSubNetIds, name, !Ref ENV] ]
+
+Resources:
+  #ECS Fargate Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !FindInMap [TaskDefinition, name, !Ref ENV]
+      ContainerDefinitions:
+        - Name: !FindInMap [Container, name, !Ref ENV]
+          PortMappings:
+            - HostPort: !Ref HostPort
+              Protocol: tcp
+              ContainerPort: !Ref ContainerPort
+          Cpu: '100'
+          Image: "nginx"
+          Environment:
+            - Name: PORT
+              Value: !Sub ${ContainerPort}
+            - Name: DB_CONNECTION_STRING
+              Value: !Sub 'mongodb+srv://${DbUsername}:${DbPassword}@cluster0.hushs.mongodb.net/${Dbname}?retryWrites=true&w=majority'
+          Essential: true
+      ExecutionRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole
+      Memory: '2048'
+      NetworkMode: awsvpc
+      Cpu: '1024'
+      RequiresCompatibilities:
+        - 'FARGATE'
+
+  #ECS Cluster      
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !FindInMap [Cluster, name, !Ref ENV]
+      Tags:
+      - Key: !Ref ECSClusterTagKey
+        Value: !Ref ECSClusterTagValue
+  
+  #ECS Service Role
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: ['elasticloadbalancing:DeregisterInstancesFromLoadBalancer', 'elasticloadbalancing:DeregisterTargets',
+              'elasticloadbalancing:Describe*', 'elasticloadbalancing:RegisterInstancesWithLoadBalancer',
+              'elasticloadbalancing:RegisterTargets', 'ec2:Describe*', 'ec2:AuthorizeSecurityGroupIngress']
+            Resource: '*'
+
+  #ECS Service
+  ClusterService:
+    Type: AWS::ECS::Service
+    DependsOn: [ TaskDefinition, ECSCluster ]
+    Properties:
+      Cluster: !GetAtt ECSCluster.Arn
+      DeploymentConfiguration:
+        MaximumPercent: '200'
+        MinimumHealthyPercent: '100'
+      DesiredCount: 1
+      LoadBalancers:
+      - ContainerName: !FindInMap [Container, name, !Ref ENV]
+        ContainerPort: !Ref ContainerPort
+        TargetGroupArn: !Ref 'ECSTG'
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - sg-01a6d5f5d2be33cda
+            - sg-0c2549adc2373b65a
+          Subnets:
+            - subnet-eae036b7
+            - subnet-05a5627d
+            - subnet-3d1afb77
+            - subnet-bfd19f94
+      ServiceName: !FindInMap [Service, name, !Ref ENV]
+
+  #Target Group for ECS
+  ECSTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn: ECSALB
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !FindInMap [ClusterTargetGroup, name, !Ref ENV]
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPCid
+
+  #Load Balancer
+  ECSALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !FindInMap [ALB, name, !Ref ENV]
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '30'
+      Subnets: !Ref PubSubNetIds
+      SecurityGroups: !Ref SGIds
+
+  #ALB Listener
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn: ECSServiceRole
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref 'ECSTG'
+      LoadBalancerArn: !Ref 'ECSALB'
+      Port: '80'
+      Protocol: HTTP
+  
+  #ALB Listener Rule
+  ECSALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    DependsOn: ALBListener
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref 'ECSTG'
+      Conditions:
+      - Field: path-pattern
+        Values: [/]
+      ListenerArn: !Ref 'ALBListener'
+      Priority: 1
+  #Codebuild Role
+  CodeBuildServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: 1
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:FilterLogEvents'
+                  - 'logs:GetLogEvents'
+                Resource:
+                  - '*'
+              - Sid: 2
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:PutObject'
+                  - 's3:GetBucketAcl'
+                  - 's3:GetBucketLocation'
+                  - 's3:CreateBucket'
+                  - 's3:List*'
+                  - 's3:PutObject'
+                Resource:
+                  - '*'
+              - Sid: 3
+                Effect: Allow
+                Action:
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:PutImage'
+                  - 'ecr:InitiateLayerUpload'
+                  - 'ecr:UploadLayerPart'
+                  - 'ecr:CompleteLayerUpload'
+                  - 'ecr:GetAuthorizationToken'
+                  - 'ecr:InitiateLayerUpload'
+                  - 'ec2:DescribeNetworkInterfaces'
+                  - 'ec2:CreateNetworkInterface'
+                  - 'ec2:DescribeDhcpOptions'
+                  - 'ec2:DescribeNetworkInterfaces'
+                  - 'ec2:DeleteNetworkInterface'
+                  - 'ec2:DescribeSubnets'
+                  - 'ec2:DescribeSecurityGroups'
+                  - 'ec2:DescribeSecurityGroupReferences'
+                  - 'ec2:DescribeStaleSecurityGroups'
+                  - 'ec2:DescribeVpcs'
+                  - 'ec2:CreateNetworkInterfacePermission'
+                Resource:
+                  - '*'
+              - Sid: 4
+                Effect: Allow
+                Action:
+                  - 'iam:AddRoleToInstanceProfile'
+                  - 'iam:AttachRolePolicy'
+                  - 'iam:CreateInstanceProfile'
+                  - 'iam:CreatePolicy'
+                  - 'iam:CreateRole'
+                  - 'iam:GetRole'
+                  - 'iam:ListAttachedRolePolicies'
+                  - 'iam:ListPolicies'
+                  - 'iam:ListRoles'
+                  - 'iam:PassRole'
+                  - 'iam:PutRolePolicy'
+                  - 'iam:UpdateAssumeRolePolicy'
+                Resource:
+                  - '*'
+              - Sid: 5
+                Effect: Allow
+                Action:
+                  - 'kms:Encrypt'
+                  - 'kms:Decrypt'
+                  - 'kms:ReEncrypt*'
+                  - 'kms:GenerateDataKey*'
+                  - 'kms:DescribeKey'
+                Resource:
+                  - '*'
+
+  #CodeBuild Project
+  CodeBuilProjectDeployDev:  
+    Type: 'AWS::CodeBuild::Project'
+    DependsOn: [ECRRepository]
+    Properties:
+      Name: !Sub '${AWS::StackName}-deploy-dev'
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspec.yaml
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Ref CodeBuildEnvironmentImage
+        EnvironmentVariables:
+          - Name: ENV_NAME
+            Value: dev
+          - Name: REPOSITORY_URI
+            Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RepositoryName} 
+          - Name: Container_name
+            Value: !Sub ${!FindInMap [Container, name, !Ref ENV]}
+  
+  #CodePipeline Role
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: ['sts:AssumeRole']
+            Effect: Allow
+            Principal:
+              Service: [codepipeline.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+      Policies:
+        - PolicyName: MACodePipelineServicePolicy
+          PolicyDocument:
+            Statement:
+              - Action:
+                  - iam:PassRole
+                Resource: "*"
+                Effect: Allow
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService:
+                      - cloudformation.amazonaws.com
+                      - elasticbeanstalk.amazonaws.com
+                      - ec2.amazonaws.com
+                      - ecs-tasks.amazonaws.com
+              - Action:
+                  - codepipeline:StartPipelineExecution
+                  - codecommit:CancelUploadArchive
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:UploadArchive
+                Resource: "*"
+                Effect: Allow
+              - Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:RegisterApplicationRevision
+                Resource: "*"
+                Effect: Allow
+              - Action:
+                  - codestar-connections:UseConnection
+                Resource: "*"
+                Effect: Allow
+              - Action:
+                  - elasticbeanstalk:*
+                  - ec2:*
+                  - elasticloadbalancing:*
+                  - autoscaling:*
+                  - cloudwatch:*
+                  - s3:*
+                  - sns:*
+                  - cloudformation:*
+                  - rds:*
+                  - sqs:*
+                  - ecs:*
+                Resource: "*"
+                Effect: Allow
+              - Action:
+                  - lambda:InvokeFunction
+                  - lambda:ListFunctions
+                Resource: "*"
+                Effect: Allow
+              - Action:
+                  - opsworks:CreateDeployment
+                  - opsworks:DescribeApps
+                  - opsworks:DescribeCommands
+                  - opsworks:DescribeDeployments
+                  - opsworks:DescribeInstances
+                  - opsworks:DescribeStacks
+                  - opsworks:UpdateApp
+                  - opsworks:UpdateStack
+                Resource: "*"
+                Effect: Allow
+              - Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+                Effect: Allow
+              - Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuildBatches
+                  - codebuild:StartBuildBatch
+                Resource: "*"
+                Effect: Allow
+              - Effect: Allow
+                Action:
+                  - devicefarm:ListProjects
+                  - devicefarm:ListDevicePools
+                  - devicefarm:GetRun
+                  - devicefarm:GetUpload
+                  - devicefarm:CreateUpload
+                  - devicefarm:ScheduleRun
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - servicecatalog:ListProvisioningArtifacts
+                  - servicecatalog:CreateProvisioningArtifact
+                  - servicecatalog:DescribeProvisioningArtifact
+                  - servicecatalog:DeleteProvisioningArtifact
+                  - servicecatalog:UpdateProduct
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:DescribeImages
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - states:DescribeExecution
+                  - states:DescribeStateMachine
+                  - states:StartExecution
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - appconfig:StartDeployment
+                  - appconfig:StopDeployment
+                  - appconfig:GetDeployment
+                Resource: "*"
+            Version: '2012-10-17'
+
+  #Code PipelineArtifact Store
+  CodePipelineArtifactStore:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+  
+  #CodePipeline Webhook 
+  CodePipelineWebhook:
+    Type: 'AWS::CodePipeline::Webhook'
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Ref GithubAccessToken
+      RegisterWithThirdParty: 'true'
+      Filters:
+        - JsonPath: $.ref
+          MatchEquals: 'refs/heads/{Branch}'
+        - JsonPath: $.repository.name
+          MatchEquals: '{Repo}'
+      TargetPipeline: !Ref CodePipeline
+      TargetAction: Source
+      TargetPipelineVersion: !GetAtt CodePipeline.Version
+  
+  #ECR Repository for Docker Images
+  ECRRepository:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      ImageTagMutability: MUTABLE
+      RepositoryName: !Ref RepositoryName
+      RepositoryPolicyText:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'ecr:BatchCheckLayerAvailability'
+              - 'ecr:BatchDeleteImage'
+              - 'ecr:BatchGetImage'
+              - 'ecr:CompleteLayerUpload'
+              - 'ecr:DeleteLifecyclePolicy'
+              - 'ecr:DeleteRepository'
+              - 'ecr:DeleteRepositoryPolicy'
+              - 'ecr:DescribeImages'
+              - 'ecr:DescribeRepositories'
+              - 'ecr:GetDownloadUrlForLayer'
+              - 'ecr:GetLifecyclePolicy'
+              - 'ecr:GetLifecyclePolicyPreview'
+              - 'ecr:GetRepositoryPolicy'
+              - 'ecr:InitiateLayerUpload'
+              - 'ecr:ListImages'
+              - 'ecr:PutImage'
+              - 'ecr:PutLifecyclePolicy'
+              - 'ecr:SetRepositoryPolicy'
+              - 'ecr:StartLifecyclePolicyPreview'
+              - 'ecr:UploadLayerPart'
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+                - codepipeline.amazonaws.com
+                - ecs.amazonaws.com
+            Effect: Allow
+            Sid: new statement
+  # #Code deploy resources
+  # CodeDeployServiceRole:
+  #   Type: 'AWS::IAM::Role'
+  #   Properties:
+  #     AssumeRolePolicyDocument:
+  #       Version: 2012-10-17
+  #       Statement:
+  #         - Effect: Allow
+  #           Principal:
+  #             Service: codedeploy.amazonaws.com
+  #           Action: 'sts:AssumeRole'
+  #     ManagedPolicyArns: [arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS, arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy, arn:aws:iam::aws:policy/AdministratorAccess]
+  # CodeDeployApplication: 
+  #   Type: "AWS::CodeDeploy::Application"
+  #   DependsOn: [ClusterService, CodePipelineServiceRole]
+  #   Properties:
+  #     ComputePlatform: ECS
+  # CodeDeployDeploymentGroup: 
+  #   Type: "AWS::CodeDeploy::DeploymentGroup"
+  #   DependsOn: CodeDeployApplication
+  #   Properties: 
+  #     ApplicationName: 
+  #       Ref: "CodeDeployApplication"
+  #     DeploymentConfigName: CodeDeployDefault.AllAtOnce
+  #     ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
+  #     DeploymentStyle:
+  #       DeploymentOption: WITH_TRAFFIC_CONTROL
+  #       DeploymentType: BLUE_GREEN
+  
+  #Codepipeline Project
+  CodePipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    DependsOn: [ClusterService,ECSCluster, TaskDefinition, CodePipelineServiceRole, CodeBuilProjectDeployDev,CodePipelineArtifactStore ]
+    Properties:
+      Name: !Ref 'AWS::StackName'
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodePipelineArtifactStore
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepository
+                Branch: !Ref GitHubBranch
+                PollForSourceChanges: false
+                OAuthToken: !Ref GithubAccessToken
+              OutputArtifacts:
+                - Name: SourceCode
+        - Name: Build   
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref CodeBuilProjectDeployDev
+              InputArtifacts:
+                - Name: SourceCode
+              OutputArtifacts:
+                - Name: BuildOutput
+        - Name: Deploy
+          Actions:
+            - Name: DeployService
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ECS
+                Version: '1'
+              RunOrder: 1
+              Configuration:
+                ClusterName: !FindInMap [Cluster, name, !Ref ENV]
+                ServiceName: !FindInMap [Service, name, !Ref ENV]
+                # ApplicationName: !Ref CodeDeployApplication
+                # DeploymentGroupName: !Ref CodeDeployDeploymentGroup
+              OutputArtifacts: []
+              InputArtifacts:
+                - Name: BuildOutput
+            - Name: QA-check
+              RunOrder: 2
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              Configuration:
+                CustomData: Approve or Reject this change after running tests in the dev environment
+

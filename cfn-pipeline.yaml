@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: CI/CD pipeline for GitHub projects
+Description: CI/CD pipeline for claranet projects
 Parameters:
   ENV:
     Type: String

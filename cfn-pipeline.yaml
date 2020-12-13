@@ -8,7 +8,7 @@ Parameters:
       - development
       - production
   VPCid:
-    Type: CommaDelimitedList
+    Type: String
     Default: 'vpc-860268fe'
   SGIds:
     Type: CommaDelimitedList
@@ -83,12 +83,12 @@ Mappings:
       production: cloud-phoenix-kata-service-prod
   ClusterTargetGroup:
     name:
-      development: cloud-phoenix-kata-targetgroup-dev
-      production: cloud-phoenix-kata-targetgroup-prod
+      development: cloudphoenixkata-tgroup-dev
+      production: cloudphoenixkata-tgroup-prod
   ALB:
     name:
-      development: cloud-phoenix-kata-alb-dev
-      production: cloud-phoenix-kata-alb-prod
+      development: cloudphoenixkata-alb-dev
+      production: cloudphoenixkata-alb-prod
 
   #!Split [ ",", !FindInMap [PubSubNetIds, name, !Ref ENV] ]
 
@@ -110,7 +110,7 @@ Resources:
             - Name: PORT
               Value: !Sub ${ContainerPort}
             - Name: DB_CONNECTION_STRING
-              Value: !Sub 'mongodb+srv://${DbUsername}:${DbPassword}@cluster0.hushs.mongodb.net/${Dbname}?retryWrites=true&w=majority'
+              Value: !Sub 'mongodb://{DbUsername}:${DbPassword}@cluster0-shard-00-00.hushs.mongodb.net:27017,cluster0-shard-00-01.hushs.mongodb.net:27017,cluster0-shard-00-02.hushs.mongodb.net:27017/{Dbname}?ssl=true&replicaSet=atlas-kmif96-shard-0&authSource=admin&retryWrites=true&w=majority'
           Essential: true
       ExecutionRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole
       Memory: '2048'

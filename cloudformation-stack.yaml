@@ -499,22 +499,22 @@ Resources:
       VersioningConfiguration:
         Status: Enabled
   
-  # #CodePipeline Webhook 
-  # CodePipelineWebhook:
-  #   Type: 'AWS::CodePipeline::Webhook'
-  #   Properties:
-  #     Authentication: GITHUB_HMAC
-  #     AuthenticationConfiguration:
-  #       SecretToken: !Ref GithubAccessToken
-  #     RegisterWithThirdParty: 'true'
-  #     Filters:
-  #       - JsonPath: $.ref
-  #         MatchEquals: 'refs/heads/{Branch}'
-  #       - JsonPath: $.repository.name
-  #         MatchEquals: '{Repo}'
-  #     TargetPipeline: !Ref CodePipeline
-  #     TargetAction: Source
-  #     TargetPipelineVersion: !GetAtt CodePipeline.Version
+  #CodePipeline Webhook 
+  CodePipelineWebhook:
+    Type: 'AWS::CodePipeline::Webhook'
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: !Ref GithubAccessToken
+      RegisterWithThirdParty: 'true'
+      Filters:
+        - JsonPath: $.ref
+          MatchEquals: 'refs/heads/{Branch}'
+        - JsonPath: $.repository.name
+          MatchEquals: '{Repo}'
+      TargetPipeline: !Ref CodePipeline
+      TargetAction: Source
+      TargetPipelineVersion: !GetAtt CodePipeline.Version
   
   #ECR Repository for Docker Images
   ECRRepository:

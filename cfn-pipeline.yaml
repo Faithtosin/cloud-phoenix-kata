@@ -105,12 +105,12 @@ Resources:
               Protocol: tcp
               ContainerPort: !Ref ContainerPort
           Cpu: '100'
-          Image: "nginx"
-          Environment:
-            - Name: PORT
-              Value: !Sub ${ContainerPort}
-            - Name: DB_CONNECTION_STRING
-              Value: !Sub 'mongodb://{DbUsername}:${DbPassword}@cluster0-shard-00-00.hushs.mongodb.net:27017,cluster0-shard-00-01.hushs.mongodb.net:27017,cluster0-shard-00-02.hushs.mongodb.net:27017/{Dbname}?ssl=true&replicaSet=atlas-kmif96-shard-0&authSource=admin&retryWrites=true&w=majority'
+          Image: 'hello-world'
+          # Environment:
+          #   - Name: PORT
+          #     Value: !Sub ${ContainerPort}
+          #   - Name: DB_CONNECTION_STRING
+          #     Value: !Sub 'mongodb://${DbUsername}:${DbPassword}@cluster0-shard-00-00.hushs.mongodb.net:27017,cluster0-shard-00-01.hushs.mongodb.net:27017,cluster0-shard-00-02.hushs.mongodb.net:27017/${Dbname}?ssl=true&replicaSet=atlas-kmif96-shard-0&authSource=admin&retryWrites=true&w=majority'
           Essential: true
       ExecutionRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole
       Memory: '2048'
@@ -348,6 +348,10 @@ Resources:
             Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RepositoryName} 
           - Name: Container_name
             Value: !Sub ${!FindInMap [Container, name, !Ref ENV]}
+          - Name: PORT
+            Value: !Sub ${ContainerPort}
+          - Name: DB_CONNECTION_STRING
+            Value: !Sub 'mongodb://${DbUsername}:${DbPassword}@cluster0-shard-00-00.hushs.mongodb.net:27017,cluster0-shard-00-01.hushs.mongodb.net:27017,cluster0-shard-00-02.hushs.mongodb.net:27017/${Dbname}?ssl=true&replicaSet=atlas-kmif96-shard-0&authSource=admin&retryWrites=true&w=majority'
   
   #CodePipeline Role
   CodePipelineServiceRole:

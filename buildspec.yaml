@@ -18,6 +18,8 @@ phases:
       - echo Build started on `date` ...
       - echo Building the Docker image...
       - echo $REPOSITORY_URI
+      - echo $DB_CONNECTION_STRING
+      - echo $PORT
       - docker build --build-arg $DB_CONNECTION_STRING --build-arg $PORT -t $REPOSITORY_URI:latest ./app
       - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
   post_build:

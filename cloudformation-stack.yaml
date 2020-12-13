@@ -12,7 +12,7 @@ Parameters:
     Default: 'vpc-860268fe'
   SGIds:
     Type: CommaDelimitedList
-    Default: 'sg-3b17706b'
+    Default: 'sg-3b17706b,sg-01a6d5f5d2be33cda,sg-0c2549adc2373b65a'
   PubSubNetIds: 
     Type: CommaDelimitedList
     Default: 'subnet-eae036b7,subnet-05a5627d,subnet-3d1afb77,subnet-bfd19f94'
@@ -93,6 +93,12 @@ Mappings:
   #!Split [ ",", !FindInMap [PubSubNetIds, name, !Ref ENV] ]
 
 Resources:
+  #Create Cloudwatch Log group
+  CloudwatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['-', [ECSLogGroup, !Ref 'AWS::StackName']]
+      RetentionInDays: 7
   #ECS Fargate Task Definition
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
@@ -100,17 +106,18 @@ Resources:
       Family: !FindInMap [TaskDefinition, name, !Ref ENV]
       ContainerDefinitions:
         - Name: !FindInMap [Container, name, !Ref ENV]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref 'CloudwatchLogsGroup'
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: !Sub ${AWS::StackName}-ecs-dev
           PortMappings:
             - HostPort: !Ref HostPort
               Protocol: tcp
               ContainerPort: !Ref ContainerPort
           Cpu: '100'
-          Image: 'hello-world'
-          # Environment:
-          #   - Name: PORT
-          #     Value: !Sub ${ContainerPort}
-          #   - Name: DB_CONNECTION_STRING
-          #     Value: !Sub 'mongodb://${DbUsername}:${DbPassword}@cluster0-shard-00-00.hushs.mongodb.net:27017,cluster0-shard-00-01.hushs.mongodb.net:27017,cluster0-shard-00-02.hushs.mongodb.net:27017/${Dbname}?ssl=true&replicaSet=atlas-kmif96-shard-0&authSource=admin&retryWrites=true&w=majority'
+          Image: 'crccheck/hello-world'
           Essential: true
       ExecutionRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole
       Memory: '2048'
@@ -168,14 +175,8 @@ Resources:
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
-          SecurityGroups:
-            - sg-01a6d5f5d2be33cda
-            - sg-0c2549adc2373b65a
-          Subnets:
-            - subnet-eae036b7
-            - subnet-05a5627d
-            - subnet-3d1afb77
-            - subnet-bfd19f94
+          SecurityGroups: !Ref SGIds
+          Subnets: !Ref PubSubNetIds
       ServiceName: !FindInMap [Service, name, !Ref ENV]
 
   #Target Group for ECS
@@ -183,7 +184,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     DependsOn: ECSALB
     Properties:
-      HealthCheckIntervalSeconds: 10
+      HealthCheckIntervalSeconds: 20
       HealthCheckPath: /
       HealthCheckProtocol: HTTP
       HealthCheckTimeoutSeconds: 5
@@ -498,22 +499,22 @@ Resources:
       VersioningConfiguration:
         Status: Enabled
   
-  #CodePipeline Webhook 
-  CodePipelineWebhook:
-    Type: 'AWS::CodePipeline::Webhook'
-    Properties:
-      Authentication: GITHUB_HMAC
-      AuthenticationConfiguration:
-        SecretToken: !Ref GithubAccessToken
-      RegisterWithThirdParty: 'true'
-      Filters:
-        - JsonPath: $.ref
-          MatchEquals: 'refs/heads/{Branch}'
-        - JsonPath: $.repository.name
-          MatchEquals: '{Repo}'
-      TargetPipeline: !Ref CodePipeline
-      TargetAction: Source
-      TargetPipelineVersion: !GetAtt CodePipeline.Version
+  # #CodePipeline Webhook 
+  # CodePipelineWebhook:
+  #   Type: 'AWS::CodePipeline::Webhook'
+  #   Properties:
+  #     Authentication: GITHUB_HMAC
+  #     AuthenticationConfiguration:
+  #       SecretToken: !Ref GithubAccessToken
+  #     RegisterWithThirdParty: 'true'
+  #     Filters:
+  #       - JsonPath: $.ref
+  #         MatchEquals: 'refs/heads/{Branch}'
+  #       - JsonPath: $.repository.name
+  #         MatchEquals: '{Repo}'
+  #     TargetPipeline: !Ref CodePipeline
+  #     TargetAction: Source
+  #     TargetPipelineVersion: !GetAtt CodePipeline.Version
   
   #ECR Repository for Docker Images
   ECRRepository:

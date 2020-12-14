@@ -102,6 +102,7 @@ Resources:
   #ECS Fargate Task Definition
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
+    DependsOn: [CloudwatchLogsGroup]
     Properties:
       Family: !FindInMap [TaskDefinition, name, !Ref ENV]
       ContainerDefinitions:
@@ -233,6 +234,68 @@ Resources:
         Values: [/]
       ListenerArn: !Ref 'ALBListener'
       Priority: 1
+  ##################################### Autoscaling ######################################
+  AutoscalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [application-autoscaling.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: service-autoscaling
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: ['application-autoscaling:*', 'cloudwatch:DescribeAlarms', 'cloudwatch:PutMetricAlarm',
+              'ecs:DescribeServices', 'ecs:UpdateService']
+            Resource: '*'
+  
+  ServiceScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: ClusterService
+    Properties:
+      MaxCapacity: 2
+      MinCapacity: 1
+      ResourceId: !Join ['', [service/, !Ref 'ECSCluster', /, !GetAtt [ClusterService, Name]]]
+      RoleARN: !GetAtt [AutoscalingRole, Arn]
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+  
+  ServiceScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: req10-target-tracking-scaling-policy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref 'ServiceScalingTarget'
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 500
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ALBRequestCountPerTarget
+          ResourceLabel: !Join [ '/', [!GetAtt ECSALB.LoadBalancerFullName, !GetAtt ECSTG.TargetGroupFullName] ]
+  
+  ALB100sAlarmScaleUp:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Average
+      Threshold: '600'
+      AlarmDescription: Alarm if our ALB gets more than 10 req /sec
+      Period: '60'
+      AlarmActions: [!Ref 'ServiceScalingPolicy']
+      Namespace: AWS/ApplicationELB
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ECSALB.LoadBalancerFullName
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: AlbMoreThan10ReqPerSec
+
+  ###################################### CI/CD Pipeline ###################################
   #Codebuild Role
   CodeBuildServiceRole:
     Type: 'AWS::IAM::Role'

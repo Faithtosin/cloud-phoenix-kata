@@ -7,58 +7,66 @@ Parameters:
     AllowedValues:
       - development
       - production
+  AlertDestinationEmail:
+    Type: String
+    Default: "tosin4rill@gmail.com"
+    Description: This email recieves alert when Maximum CPUUtilization crosses 80%
   VPCid:
     Type: String
     Default: 'vpc-860268fe'
+    Description: A valid VPC ID
   SGIds:
     Type: CommaDelimitedList
     Default: 'sg-3b17706b,sg-01a6d5f5d2be33cda,sg-0c2549adc2373b65a'
+    Description: A valid security group ID (Inbound traffic must be allowed for Host port)
   PubSubNetIds: 
     Type: CommaDelimitedList
     Default: 'subnet-eae036b7,subnet-05a5627d,subnet-3d1afb77,subnet-bfd19f94'
-  PrivSubNetIds:
-    Type: CommaDelimitedList
-    Default: 'subnet-eae036b7,subnet-05a5627d,subnet-3d1afb77,subnet-bfd19f94'
+    Description: A public subnet (IGW attached and Inbound & outbound access allowed for Host Port parameter value )
   ContainerPort: 
     Type: Number
     Default: 8080
+    Description: Port to expose on the container (for a example in a docker run -p ****:<ContainerPort>)
   HostPort: 
     Type: Number
     Default: 8080
+    Description: Port to expose on the Host (for a example in a docker run -p <HostPort>:****)
   Dbname:
     Type: String
     Default: phoenixdb
+    Description: Mongodb database name
     NoEcho: true
   DbUsername:
     Type: String
-    Default: admin
+    Description: Mongodb database Username (with write permission).  Never exposed at any stage of the PIpeline
+    Default: dbuser
     NoEcho: true
   DbPassword:
     Type: String
+    Description: Mongodb database Password. Never exposed at any stage of the PIpeline
     NoEcho: true
-  ECSClusterTagKey:
-    Type: String
-    Default: Env
-  ECSClusterTagValue:
-    Type: String
-    Default: development
   RepositoryName:
     Type: String
+    Description: AWS ECR name
+    Description: Git
     Default: cloud-phoenix-kata
   GitHubOwner:
     Type: String
     AllowedPattern: '[A-Za-z0-9-]+'
+    Description: Github owner/Organization name (CASE SENSITIVE)
     Default: Faithtosin
   GitHubRepository:
     Type: String
     AllowedPattern: '[A-Za-z0-9-]+'
     Default: cloud-phoenix-kata
+    Description: Github repository name (CASE SENSITIVE)
   GithubAccessToken:
     Type: String
-    Default: '{{resolve:secretsmanager:GITHUB_ACCESS:SecretString:GITHUB_ACCESS_TOKEN}}'
+    Description: Github Access Token
     NoEcho: true
   GitHubBranch:
     Type: String
+    Description: Github branch to trigger pipeline (Merge/commit will trigger the pipeline)
     AllowedPattern: '[A-Za-z0-9-]+'
     Default: main
   CodeBuildEnvironmentImage:
@@ -102,6 +110,7 @@ Resources:
   #ECS Fargate Task Definition
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
+    DependsOn: [CloudwatchLogsGroup]
     Properties:
       Family: !FindInMap [TaskDefinition, name, !Ref ENV]
       ContainerDefinitions:
@@ -117,7 +126,7 @@ Resources:
               Protocol: tcp
               ContainerPort: !Ref ContainerPort
           Cpu: '100'
-          Image: 'crccheck/hello-world'
+          Image: 'nginx'
           Essential: true
       ExecutionRoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole
       Memory: '2048'
@@ -131,9 +140,6 @@ Resources:
     Type: AWS::ECS::Cluster
     Properties:
       ClusterName: !FindInMap [Cluster, name, !Ref ENV]
-      Tags:
-      - Key: !Ref ECSClusterTagKey
-        Value: !Ref ECSClusterTagValue
   
   #ECS Service Role
   ECSServiceRole:
@@ -233,6 +239,95 @@ Resources:
         Values: [/]
       ListenerArn: !Ref 'ALBListener'
       Priority: 1
+  ##################################### Autoscaling ######################################
+  AutoscalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [application-autoscaling.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: service-autoscaling
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action: ['application-autoscaling:*', 'cloudwatch:DescribeAlarms', 'cloudwatch:PutMetricAlarm',
+              'ecs:DescribeServices', 'ecs:UpdateService']
+            Resource: '*'
+  
+  ServiceScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: ClusterService
+    Properties:
+      MaxCapacity: 2
+      MinCapacity: 1
+      ResourceId: !Join ['', [service/, !Ref 'ECSCluster', /, !GetAtt [ClusterService, Name]]]
+      RoleARN: !GetAtt [AutoscalingRole, Arn]
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+  
+  ServiceScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: req10-target-tracking-scaling-policy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref 'ServiceScalingTarget'
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 400
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 30
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ALBRequestCountPerTarget
+          ResourceLabel: !Join [ '/', [!GetAtt ECSALB.LoadBalancerFullName, !GetAtt ECSTG.TargetGroupFullName] ]
+  
+  ALB100sAlarmScaleUp:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Sum
+      Threshold: '600'
+      AlarmDescription: Alarm if our ALB gets more than 10 req /sec
+      Period: '60'
+      AlarmActions: [!Ref 'ServiceScalingPolicy']
+      Namespace: AWS/ApplicationELB
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ECSALB.LoadBalancerFullName
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: RequestCount
+  
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref AlertDestinationEmail"tosin4rill@gmail.com"
+          Protocol: email
+
+  CPUpeakAlert:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: [SNSTopic]
+    Properties:
+      EvaluationPeriods: '1'
+      Statistic: Maximum
+      Threshold: '80'
+      AlarmDescription: More than 80% CPUUtilization Alarm 
+      Period: '60'
+      AlarmActions: [!Ref 'SNSTopic']
+      Namespace: AWS/ECS
+      Dimensions:
+        - Name: ServiceName
+          Value: !FindInMap [Service, name, !Ref ENV]
+        - Name: ClusterName
+          Value: !FindInMap [Cluster, name, !Ref ENV]
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+
+  ###################################### CI/CD Pipeline ###################################
   #Codebuild Role
   CodeBuildServiceRole:
     Type: 'AWS::IAM::Role'
@@ -650,3 +745,13 @@ Resources:
               Configuration:
                 CustomData: Approve or Reject this change after running tests in the dev environment
 
+Outputs:
+  ecsservice:
+    Value: !Ref 'ClusterService'
+  ecscluster:
+    Value: !Ref 'ECSCluster'
+  ECSALB:
+    Description: Your ALB DNS URL
+    Value: !Join ['', [!GetAtt [ECSALB, DNSName]]]
+  taskdef:
+    Value: !Ref 'TaskDefinition'

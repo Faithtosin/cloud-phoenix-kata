@@ -42,9 +42,7 @@ AWS Codepipeline automatically kicks in after the stack creation, and the applic
 
 > The stack can also be created using the **AWS CLI**. 
 > 
->     aws cloudformation create-stack --stack-name myteststack --template-body file://cloudformation-stack.yaml --parameters ParameterKey=ENV,ParameterValue=development
-> ParameterKey=AlertDestinationEmail,ParameterValue=******@gmail.com
-> ..........
+>     aws cloudformation create-stack --stack-name myteststack --template-body file://cloudformation-stack.yaml --parameters ParameterKey=ENV,ParameterValue=development ParameterKey=AlertDestinationEmail,ParameterValue=******@gmail.com ..........
 > 
 > But using the AWS CLI  requires additional configuration.
 
